@@ -1,87 +1,140 @@
-import json
+"""
+Evaluation pipeline for zero-shot LLM extraction of toxic alcohol and methanol poisoning events.
+This script reproduces the entity-level precision, recall, and F1 scores reported in the manuscript using a gold-standard dataset of news articles annotated by human reviewers.
+Author: Damian Honeyman et al.
+"""
+import argparse
 import pandas as pd
-import sys, os
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-#from dotenv import load_dotenv
+import numpy as np
 from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
-from src.ner_labelling.post_process_entities import PostProcessorEntities
-from src.ner_labelling.post_process_relations import PostProcessorRelations
 from scipy.optimize import linear_sum_assignment
-import os 
-import re
-import numpy as np
+from scipy.stats import beta
 
-class NERAndRelationEvaluation:
-    def __init__(self, input_path, output_path, mode, embedding_model_path):
+
+class NEREvaluation:
+    def __init__(self, input_path: str, embedding_model: str):
         self.input_path = input_path
-        self.output_path = output_path 
-        self.mode = mode
-        self.df = pd.read_csv(self.input_path)
-        #self.extracted_data = None
-        self.entity_processor = PostProcessorEntities(self.df)
-        self.relation_processor = PostProcessorRelations(self.df)
-        self.embedded_model = SentenceTransformer(embedding_model_path, trust_remote_code=True)
-    
-    def get_embedding_sentence_transformers(self, embed_model, texts):
-        embeddings = embed_model.encode(texts)
-        dimensions = 768
-        return embeddings[:, :dimensions]
 
-    def fuzzy_match_outbreak(self, prediction, actual, threshold=0.9):
-        actual_lower = [item.lower() for item in actual]
-        predicted_lower = [item.lower() for item in prediction]
-        common_lower = set(actual_lower).intersection(predicted_lower)
-        actual_filtered = [item for item in actual if item.lower() not in common_lower]
-        predicted_filtered = [item for item in prediction if item.lower() not in common_lower]
-        if not predicted_filtered or not actual_filtered:
-            return prediction, np.array([[]])
+        if input_path.lower().endswith(".xlsx"):
+            self.df = pd.read_excel(input_path)
+        else:
+            self.df = pd.read_csv(input_path)
 
-        prediction_embedding = self.get_embedding_sentence_transformers(self.embedded_model, predicted_filtered)
-        actual_embedding = self.get_embedding_sentence_transformers(self.embedded_model, actual_filtered)
-        cosine_sim_matrix = cosine_similarity(prediction_embedding, actual_embedding)
-        cosine_sim_matrix_copy = np.copy(cosine_sim_matrix)
+        self.embedding_model = SentenceTransformer(embedding_model, trust_remote_code=True)
 
-        for row_idx, row in enumerate(cosine_sim_matrix):
-            for col_idx, col in enumerate(row):
-                if cosine_sim_matrix[row_idx][col_idx] >= threshold:
-                    cosine_sim_matrix[row_idx][col_idx] = 1
+    def normalize_label(self, label: str):
 
-        row_idx, col_idx = linear_sum_assignment(-cosine_sim_matrix)
-        term_arr = []
-        for i in range(len(row_idx)):
-            if cosine_sim_matrix[row_idx[i], col_idx[i]] == 1:
-                term_arr.append(actual_filtered[col_idx[i]])
+        cleaned = str(label).strip()
+
+        mapping = {
+            "fatality count": "FATALITY COUNT",
+            "case number": "CASE NUMBER",
+            "state": "STATE",
+            "county": "COUNTY",
+            "city": "CITY",
+            "location": "LOCATION",
+            "timeframe": "TIMEFRAME",
+            "answer": "Answer",
+            "adverbs": "Adverbs",
+            "years": "Years",
+            "months": "Months",
+            "dates": "Dates",
+            "date": "date",
+            "dates or days of the week": "Dates or days of the week",
+        }
+
+        return mapping.get(cleaned.lower(), cleaned)
+
+    def convert_entities_to_dictionary(self, text: str):
+
+        if pd.isna(text) or str(text).strip() == "":
+            return {}
+
+        lines = str(text).splitlines()
+        entity_dict = {}
+        current_key = None
+
+        for raw_line in lines:
+
+            line = raw_line.strip()
+
+            if not line:
+                continue
+
+            if line.startswith("-"):
+                line = line[1:].strip()
+
+            if ":" in line:
+
+                key_part, value_part = line.split(":", 1)
+                key = self.normalize_label(key_part)
+                value = value_part.strip()
+
+                entity_dict.setdefault(key, [])
+                current_key = key
+
+                if value != "":
+                    entity_dict[key].append(value)
+
             else:
-                term_arr.append(predicted_filtered[row_idx[i]])
 
-        remaining_idx = set(range(len(predicted_filtered))) - set(row_idx)
-        for idx in remaining_idx:
-            term_arr.append(predicted_filtered[idx])
-        common_original = [item for item in actual if item.lower() in common_lower]
-        term_arr.extend(common_original)
-        return term_arr, cosine_sim_matrix_copy
-    
+                if current_key is not None:
+                    entity_dict.setdefault(current_key, []).append(line)
+
+        for key, values in entity_dict.items():
+
+            seen = set()
+            deduped = []
+
+            for value in values:
+
+                v = str(value).strip()
+
+                if v.lower() not in seen:
+                    deduped.append(v)
+                    seen.add(v.lower())
+
+            entity_dict[key] = deduped
+
+        return entity_dict
+
+    def get_embedding_sentence_transformers(self, texts):
+
+        embeddings = self.embedding_model.encode(texts)
+
+        if embeddings.ndim == 2 and embeddings.shape[1] > 768:
+            embeddings = embeddings[:, :768]
+
+        return embeddings
+
     def fuzzy_match(self, prediction, actual, threshold=1.0):
-        actual_lower = [item.lower() for item in actual]
-        predicted_lower = [item.lower() for item in prediction]
+
+        actual_lower = [str(i).lower() for i in actual]
+        predicted_lower = [str(i).lower() for i in prediction]
+
         common_lower = set(actual_lower).intersection(predicted_lower)
-        actual_filtered = [item for item in actual if item.lower() not in common_lower]
-        predicted_filtered = [item for item in prediction if item.lower() not in common_lower]
+
+        actual_filtered = [i for i in actual if str(i).lower() not in common_lower]
+        predicted_filtered = [i for i in prediction if str(i).lower() not in common_lower]
+
         if not predicted_filtered or not actual_filtered:
             return prediction
 
-        prediction_embedding = self.get_embedding_sentence_transformers(self.embedded_model, predicted_filtered)
-        actual_embedding = self.get_embedding_sentence_transformers(self.embedded_model, actual_filtered)
+        prediction_embedding = self.get_embedding_sentence_transformers(predicted_filtered)
+        actual_embedding = self.get_embedding_sentence_transformers(actual_filtered)
+
         cosine_sim_matrix = cosine_similarity(prediction_embedding, actual_embedding)
 
-        for row_idx, row in enumerate(cosine_sim_matrix):
-            for col_idx, col in enumerate(row):
-                if cosine_sim_matrix[row_idx][col_idx] >= threshold:
-                    cosine_sim_matrix[row_idx][col_idx] = 1
+        for r in range(len(cosine_sim_matrix)):
+            for c in range(len(cosine_sim_matrix[r])):
+                if cosine_sim_matrix[r][c] >= threshold:
+                    cosine_sim_matrix[r][c] = 1
 
         row_idx, col_idx = linear_sum_assignment(-cosine_sim_matrix)
+
         term_arr = []
+
         for i in range(len(row_idx)):
             if cosine_sim_matrix[row_idx[i], col_idx[i]] == 1:
                 term_arr.append(actual_filtered[col_idx[i]])
@@ -89,276 +142,226 @@ class NERAndRelationEvaluation:
                 term_arr.append(predicted_filtered[row_idx[i]])
 
         remaining_idx = set(range(len(predicted_filtered))) - set(row_idx)
+
         for idx in remaining_idx:
             term_arr.append(predicted_filtered[idx])
-        common_original = [item for item in actual if item.lower() in common_lower]
+
+        common_original = [i for i in actual if str(i).lower() in common_lower]
+
         term_arr.extend(common_original)
+
         return term_arr
 
-    def calculate_precision(self, true_positive, false_positive):
-        if true_positive + false_positive == 0:
-            return 0
-        return true_positive / (true_positive + false_positive)
+    def merge_entity_labels(self, ner_dict):
 
-    def calculate_recall(self, true_positive, false_negative):
-        if true_positive + false_negative == 0:
-            return 0
-        return true_positive / (true_positive + false_negative)
+        if not ner_dict:
+            return ner_dict
 
-    def calculate_f_measure(self, precision, recall):
-        if precision + recall == 0:
-            return 0
-        return 2 * (precision * recall) / (precision + recall)
+        merged = {}
 
-    def evaluate_outbreak(self, predicted_outbreak, label_outbreak):
-        true_positives = 0
-        false_positives = 0
-        false_negatives = 0
-        cosine_mat = np.array([[]])
-    
-        if not predicted_outbreak and not label_outbreak:
-            true_positives += 1
-        elif not predicted_outbreak:
-            false_negatives += len(label_outbreak)
-        elif not label_outbreak:
-            false_positives += len(predicted_outbreak)
-        else:
-            fuzzy_matched_prediction, cosine_mat = self.fuzzy_match_outbreak(predicted_outbreak, label_outbreak)
-            predicted_outbreak_set = set(fuzzy_matched_prediction)
-            labelled_outbreak_set = set(label_outbreak)
-            predicted_outbreak_set = {
-                outbreak.lower() for outbreak in predicted_outbreak_set
-            }
-            labelled_outbreak_set = {
-                outbreak.lower() for outbreak in labelled_outbreak_set
-            }
-            true_positives = len(predicted_outbreak_set & labelled_outbreak_set)
-            false_positives = len(predicted_outbreak_set - labelled_outbreak_set)
-            false_negatives = len(labelled_outbreak_set - predicted_outbreak_set)
+        for key, values in ner_dict.items():
+            key_norm = self.normalize_label(key)
+            merged.setdefault(key_norm, []).extend(values)
 
-        metrics = {
-                "TP": true_positives,
-                "FP": false_positives,
-                "FN": false_negatives
-            }
-        return metrics, cosine_mat
+        for key, values in merged.items():
+
+            seen = set()
+            deduped = []
+
+            for value in values:
+
+                v = str(value).strip()
+
+                if v.lower() not in seen:
+                    deduped.append(v)
+                    seen.add(v.lower())
+
+            merged[key] = deduped
+
+        return merged
 
     def evaluate_ner(self, predicted_ner, label_ner):
-        """
-        considered_entities_for_all = [
-            "LOCATION",
-            "DATE",
-            "TIMEFRAME",
-            "FATALITY COUNT",
-            "CASE NUMBER",
-        ]
-        """
-        considered_entities_for_all = list(set(predicted_ner.keys()) | set(label_ner.keys()))
+
+        predicted_ner = self.merge_entity_labels(predicted_ner)
+        label_ner = self.merge_entity_labels(label_ner)
+
+        # "Not mentioned" denotes entity absence, not an extracted value.
+        pred = {k: self.strip_absent(v) for k, v in predicted_ner.items()}
+        lab = {k: self.strip_absent(v) for k, v in label_ner.items()}
+
         metrics = {}
 
-        for entity_type in considered_entities_for_all:
-            true_positives = 0
-            false_positives = 0
-            false_negatives = 0
-            true_negatives = 0
+        for entity_type in set(pred) | set(lab):
 
-            if entity_type not in predicted_ner and entity_type  not in label_ner:
-                true_negatives += 1
-            elif entity_type not in predicted_ner:
-                false_negatives += len(label_ner[entity_type])
-            elif entity_type not in label_ner:
-                false_positives += len(predicted_ner[entity_type])
-            elif any(item.lower() == 'not mentioned' for item in predicted_ner[entity_type]) and any(item.lower() == 'not mentioned' for item in label_ner[entity_type]):
-                true_negatives += 1
-            elif any(item.lower() == 'not mentioned' for item in predicted_ner[entity_type]):
-                true_negatives += len(label_ner[entity_type])
-            elif any(item.lower() == 'not mentioned' for item in label_ner[entity_type]):
-                false_positives += len(predicted_ner[entity_type])
+            p = pred.get(entity_type, [])
+            l = lab.get(entity_type, [])
+
+            tp = fp = fn = tn = 0
+
+            if not p and not l:
+                # Neither model nor annotator recorded the entity: true negative.
+                tn = 1
+
+            elif not p:
+                # Annotator recorded entities, model did not: these are MISSES.
+                fn = len(l)
+
+            elif not l:
+                fp = len(p)
+
             else:
-                fuzzy_matched_prediction = self.fuzzy_match(predicted_ner[entity_type], label_ner[entity_type])
-                predicted_entity_set = set(fuzzy_matched_prediction)
-                labelled_entity_set = set(label_ner[entity_type])
-                predicted_entity_set = {
-                    entity.lower() for entity in predicted_entity_set
-                }
-                labelled_entity_set = {
-                    entity.lower() for entity in labelled_entity_set
-                }
-                true_positives = len(predicted_entity_set & labelled_entity_set)
-                false_positives = len(predicted_entity_set - labelled_entity_set)
-                false_negatives = len(labelled_entity_set - predicted_entity_set)
+                fuzzy = self.fuzzy_match(p, l)
+                pred_set = {str(i).lower() for i in fuzzy}
+                lab_set = {str(i).lower() for i in l}
+                tp = len(pred_set & lab_set)
+                fp = len(pred_set - lab_set)
+                fn = len(lab_set - pred_set)
 
-            metrics[entity_type] = {
-                "TP": true_positives,
-                "FP": false_positives,
-                "FN": false_negatives,
-                "TN": true_negatives
-            }
+            metrics[entity_type] = {"TP": tp, "FP": fp, "FN": fn, "TN": tn}
 
         return metrics
 
-    def evaluate_relations(self, predicted_re, label_re):
-        considered_relations_for_all = [
-            "LOCATED AT",
-            "FATALITY FROM",
-            "CASES OF",
-            "FATALITIES IN",
-            "CASES IN",
-            "OCCURRED ON",
-            "OCCURRED WITHIN",
-            "SYMPTOMS OF",
-        ]
-        metrics = {}
+    ABSENT = {"not mentioned", "none", "n/a", ""}
 
-        for relation_type in considered_relations_for_all:
-            true_positives = 0
-            false_positives = 0
-            false_negatives = 0
+    def strip_absent(self, values):
+        return [v for v in values if str(v).strip().lower() not in self.ABSENT]
 
-            if relation_type not in predicted_re and relation_type not in label_re:
-                true_positives += 1
-            elif relation_type not in predicted_re:
-                false_negatives += len(label_re[relation_type])
-            elif relation_type not in label_re:
-                false_positives += len(predicted_re[relation_type])
-            else:
-                predicted_re_strings = [
-                    ", ".join(f"{key}: {value}" for key, value in pr.items())
-                    for pr in predicted_re[relation_type]
-                ]
-                labelled_re_strings = [
-                    ", ".join(f"{key}: {value}" for key, value in pr.items())
-                    for pr in label_re[relation_type]
-                ]
+    def calculate_precision(self, tp, fp):
+        return 0 if tp + fp == 0 else tp / (tp + fp)
 
-                fuzzy_matched_prediction = self.fuzzy_match(predicted_re_strings, labelled_re_strings)
-                predicted_relation_set = set(fuzzy_matched_prediction)
-                labelled_relation_set = set(labelled_re_strings)
-                predicted_relation_set = {
-                    entity.lower() for entity in predicted_relation_set
-                }
-                labelled_relation_set = {
-                    entity.lower() for entity in labelled_relation_set
-                }
-                true_positives = len(predicted_relation_set & labelled_relation_set)
-                false_positives = len(predicted_relation_set - labelled_relation_set)
-                false_negatives = len(labelled_relation_set - predicted_relation_set)
+    def calculate_recall(self, tp, fn):
+        return 0 if tp + fn == 0 else tp / (tp + fn)
 
-            metrics[relation_type] = {
-                "TP": true_positives,
-                "FP": false_positives,
-                "FN": false_negatives
-            }
-        
-        return metrics
+    def calculate_f_measure(self, p, r):
+        return 0 if p + r == 0 else 2 * (p * r) / (p + r)
+
+    def clopper_pearson_ci(self, successes, trials, alpha=0.05):
+
+        if trials == 0:
+            return 0, 1
+
+        x = int(successes)
+        n = int(trials)
+
+        low = 0 if x == 0 else beta.ppf(alpha / 2, x, n - x + 1)
+        high = 1 if x == n else beta.ppf(1 - alpha / 2, x + 1, n - x)
+
+        return float(low), float(high)
 
     def fit(self):
-        full_evaluation = {}
-        full_evaluation_ner = {}
-        cumulative_evalation = {}
 
-        evaluated_count = 0
-        prediction_columns = [
-            col for col in self.df.columns 
-            if 'feedback' not in col.lower() and 'url' not in col.lower() and '_id' not in col and 'actual' not in col.lower() and 'summary' not in col.lower() and 'entities_dictionary' not in col.lower() and 'relations_dictionary' not in col.lower()
-        ]
+        required_columns = {"feedback", "gpt4"}
 
-        for col in prediction_columns:
-            full_evaluation[col] = {}
-            full_evaluation_ner[col] = {}
+        if not required_columns.issubset(self.df.columns):
+            raise ValueError("Dataset must contain 'gpt4' and 'feedback' columns")
 
-        for key, value in self.df.iterrows():
-            evaluated_count += 1
-            if evaluated_count % 100 == 1:
-                print(f"Starting row {evaluated_count}")
+        full_eval = {"gpt4": {}}
 
-            for col in prediction_columns:
-                actual = value["feedback"]
-                prediction = value[col]
-                print(prediction)
-                if self.mode == "NER":
-                    actual_entities_dictionary = {} if pd.isna(actual) else self.entity_processor.convert_entities_to_dictionary(actual)
-                    predicted_entities_dictionary = {} if pd.isna(prediction) else self.entity_processor.convert_entities_to_dictionary(prediction)
-                    print(predicted_entities_dictionary)
-                    evaluation = self.evaluate_ner(predicted_entities_dictionary, actual_entities_dictionary)
+        for _, row in self.df.iterrows():
+
+            actual = row["feedback"]
+            prediction = row["gpt4"]
+
+            actual_dict = self.convert_entities_to_dictionary(actual)
+            pred_dict = self.convert_entities_to_dictionary(prediction)
+
+            evaluation = self.evaluate_ner(pred_dict, actual_dict)
+
+            for entity, scores in evaluation.items():
+
+                if entity not in full_eval["gpt4"]:
+                    full_eval["gpt4"][entity] = scores.copy()
+
                 else:
-                    actual_relations_dictionary = {} if pd.isna(actual) else self.relation_processor.convert_relations_to_dictionary(actual)[0]
-                    predicted_relations_dictionary = {} if pd.isna(prediction) else self.relation_processor.convert_relations_to_dictionary(prediction)[0]
-                    evaluation = self.evaluate_relations(predicted_relations_dictionary, actual_relations_dictionary)
+                    for k in scores:
+                        full_eval["gpt4"][entity][k] += scores[k]
 
-                for eval_type in evaluation:
-                    if eval_type not in full_evaluation[col]:
-                        full_evaluation[col][eval_type] = evaluation[eval_type]
-                        full_evaluation_ner[col][eval_type] = {}
-                    else:
-                        full_evaluation[col][eval_type]['TP'] += evaluation[eval_type]['TP']
-                        full_evaluation[col][eval_type]['FP'] += evaluation[eval_type]['FP']
-                        full_evaluation[col][eval_type]['FN'] += evaluation[eval_type]['FN']
-                        full_evaluation[col][eval_type]['TN'] += evaluation[eval_type]['TN']
+        allowed_entities = {
+            "Answer",
+            "FATALITY COUNT",
+            "CASE NUMBER",
+            "STATE",
+            "COUNTY",
+            "CITY",
+            "LOCATION",
+            "TIMEFRAME",
+            "Years",
+            "Months",
+            "Dates",
+            "date",
+            "Dates or days of the week",
+            "Adverbs",
+        }
 
-                    precision = self.calculate_precision(full_evaluation[col][eval_type]['TP'], full_evaluation[col][eval_type]['FP'])
-                    recall = self.calculate_recall(full_evaluation[col][eval_type]['TP'], full_evaluation[col][eval_type]['FN'])
-                    f_measure = self.calculate_f_measure(precision, recall)
-                    if evaluated_count not in cumulative_evalation:
-                        cumulative_evalation[evaluated_count] = {}
-                    if col not in cumulative_evalation[evaluated_count]:
-                        cumulative_evalation[evaluated_count][col] = {}
-                    cumulative_evalation[evaluated_count][col][eval_type] = f_measure
+        # Reporting rename
+        reporting_names = {
+            "LOCATION": "COUNTRY",
+            "Answer": "Event identification"
+        }
 
         rows = []
-        for row, methods in cumulative_evalation.items():
-            for method, entities in methods.items():
-                row_data = {'row': row, 'method': method}
-                row_data.update(entities)
-                rows.append(row_data)
-        cumulative_df = pd.DataFrame(rows)
 
-        for col in prediction_columns:
-            for eval_type in full_evaluation[col]:
-                precision = self.calculate_precision(full_evaluation[col][eval_type]['TP'], full_evaluation[col][eval_type]['FP'])
-                recall = self.calculate_recall(full_evaluation[col][eval_type]['TP'], full_evaluation[col][eval_type]['FN'])
-                full_evaluation_ner[col][eval_type]['TP'] = full_evaluation[col][eval_type]['TP']
-                full_evaluation_ner[col][eval_type]['FP'] = full_evaluation[col][eval_type]['FP']
-                full_evaluation_ner[col][eval_type]['FN'] = full_evaluation[col][eval_type]['FN']
-                full_evaluation_ner[col][eval_type]['TN'] = full_evaluation[col][eval_type]['TN']
-                full_evaluation_ner[col][eval_type]['precision'] = precision
-                full_evaluation_ner[col][eval_type]['recall'] = recall
-                full_evaluation_ner[col][eval_type]['fmeasure'] = self.calculate_f_measure(precision, recall)
+        for entity, m in full_eval["gpt4"].items():
 
-        df_rows = []
-        for method, entities in full_evaluation_ner.items():
-            method_name = method
-            for entity, metrics in entities.items():
-                row = {
-                    'ENTITY_TYPE': entity,
-                    'precision': metrics['precision'],
-                    'recall': metrics['recall'],
-                    'fmeasure': metrics['fmeasure'],
-                    'method': method_name,
-                    'TP': metrics['TP'],
-                    'FP': metrics['FP'],
-                    'FN': metrics['FN'],
-                    'TN': metrics['TN']
-                }
-                df_rows.append(row)
+            if entity not in allowed_entities:
+                continue
 
-        df = pd.DataFrame(df_rows)
-        return df, cumulative_df
+            p = self.calculate_precision(m["TP"], m["FP"])
+            r = self.calculate_recall(m["TP"], m["FN"])
+            f = self.calculate_f_measure(p, r)
+
+            p_low, p_high = self.clopper_pearson_ci(m["TP"], m["TP"] + m["FP"])
+            r_low, r_high = self.clopper_pearson_ci(m["TP"], m["TP"] + m["FN"])
+
+            entity_name = reporting_names.get(entity, entity)
+
+            rows.append({
+                "ENTITY_TYPE": entity_name,
+                "precision": p,
+                "precision_ci_low": p_low,
+                "precision_ci_high": p_high,
+                "recall": r,
+                "recall_ci_low": r_low,
+                "recall_ci_high": r_high,
+                "fmeasure": f,
+                "TP": m["TP"],
+                "FP": m["FP"],
+                "FN": m["FN"],
+                "TN": m["TN"],
+            })
+
+        return pd.DataFrame(rows)
+
+
+def main():
+
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument(
+        "--input",
+        default="evaluation_dataset_100_articles.xlsx"
+    )
+
+    parser.add_argument(
+        "--output",
+        default="evaluation_results.csv"
+    )
+
+    parser.add_argument(
+        "--embedding_model",
+        default="sentence-transformers/all-MiniLM-L6-v2"
+    )
+
+    args = parser.parse_args()
+
+    evaluator = NEREvaluation(args.input, args.embedding_model)
+
+    output_df = evaluator.fit()
+
+    output_df.to_csv(args.output, index=False)
+
+    print("Saved evaluation results to:", args.output)
+
 
 if __name__ == "__main__":
-    input_path = ""
-    output_path = ""
-    
-
-    NER_RE_evaluation = NERAndRelationEvaluation(input_path, output_path, "NER", "")
-    out, cumulative_out = NER_RE_evaluation.fit()
-    out.to_csv(output_path, index=False)
-cumulative_long = (
-    cumulative_out
-      .melt(id_vars=["row","method"], var_name="ENTITY_TYPE", value_name="f1")
-      .dropna(subset=["f1"])
-)
-
-cumulative_out_path = output_path.replace(".csv", "_cumulative.csv")
-cumulative_long.to_csv(cumulative_out_path, index=False)
-print("Saved:", cumulative_out_path)
+    main()
