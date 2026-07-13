@@ -1,0 +1,249 @@
+"""
+Inter-annotator agreement for the toxic alcohol and methanol poisoning evaluation set.
+
+Computes per cent agreement and Cohen's kappa (with 95% confidence intervals) between
+two independent human annotators, at the entity level.
+
+An entity is treated as concordant only where both annotators recorded the same entity
+type for the same article with equivalent normalised values. Where both annotators
+recorded an entity but the values differ, the annotation is treated as discordant.
+
+Agreement for event identification is computed across all annotated articles.
+Agreement for all other entity types is computed across the event-positive articles only,
+since entity extraction is not performed for articles containing no event.
+
+Author: Damian Honeyman et al.
+"""
+import argparse
+import re
+
+import numpy as np
+import pandas as pd
+
+ABSENT = {"not mentioned", "none", "n/a", ""}
+
+LABEL_MAP = {
+    "answer": "Answer",
+    "fatality count": "FATALITY COUNT",
+    "case number": "CASE NUMBER",
+    "location": "LOCATION",
+    "date": "DATE",
+    "dates": "Dates",
+    "dates or days of the week": "Dates",
+    "timeframe": "TIMEFRAME",
+    "time period": "TIMEFRAME",
+    "years": "Years",
+    "year": "Years",
+    "months": "Months",
+    "adverbs": "Adverbs",
+}
+
+REPORTED = [
+    ("FATALITY COUNT", "Fatality count"),
+    ("LOCATION", "Location"),
+    ("DATE", "Date"),
+    ("CASE NUMBER", "Case number"),
+    ("Dates", "Year, months, dates, adverbs of time"),
+]
+
+
+def normalise_label(key):
+    return LABEL_MAP.get(key.strip().lower(), key.strip())
+
+
+def normalise_value(value):
+    return re.sub(r"[^a-z0-9 ]", "", str(value).lower().strip())
+
+
+def parse_annotation(text):
+    """Parse the structured bullet-list annotation into {entity: [values]}."""
+    if pd.isna(text):
+        return {}
+
+    entities = {}
+    current = None
+
+    for raw_line in str(text).splitlines():
+
+        line = raw_line.strip()
+
+        if line.startswith("-"):
+            line = line[1:].strip()
+
+        if not line:
+            continue
+
+        if ":" in line:
+            key, value = line.split(":", 1)
+            key = normalise_label(key)
+            value = value.strip()
+            entities.setdefault(key, [])
+            current = key
+            if value:
+                entities[key].append(value)
+
+        elif current is not None:
+            entities.setdefault(current, []).append(line)
+
+    return {
+        key: [v for v in values if str(v).strip().lower() not in ABSENT]
+        for key, values in entities.items()
+    }
+
+
+def cohens_kappa(a, b, c, d):
+    """a = concordant positive, b = annotator 1 only or value mismatch,
+    c = annotator 2 only, d = concordant negative."""
+    n = a + b + c + d
+
+    if n == 0:
+        return np.nan, np.nan, np.nan, np.nan
+
+    po = (a + d) / n
+    pe = ((a + b) * (a + c) + (c + d) * (b + d)) / (n * n)
+
+    if pe == 1:
+        return po * 100, np.nan, np.nan, np.nan
+
+    kappa = (po - pe) / (1 - pe)
+    se = np.sqrt(po * (1 - po) / (n * (1 - pe) ** 2))
+
+    return po * 100, kappa, max(-1.0, kappa - 1.96 * se), min(1.0, kappa + 1.96 * se)
+
+
+def interpret(kappa):
+    if np.isnan(kappa):
+        return "Undefined"
+    if kappa >= 0.99:
+        return "Perfect"
+    if kappa >= 0.81:
+        return "Almost perfect"
+    if kappa >= 0.61:
+        return "Substantial"
+    if kappa >= 0.41:
+        return "Moderate"
+    if kappa >= 0.21:
+        return "Fair"
+    return "Slight"
+
+
+def load(path):
+    if path.lower().endswith(".xlsx"):
+        return pd.read_excel(path)
+    return pd.read_csv(path)
+
+
+def main():
+
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument(
+        "--annotator1",
+        default="evaluation_dataset_100_articles.xlsx",
+        help="Gold-standard file; the 'feedback' column holds annotator 1's labels"
+    )
+
+    parser.add_argument(
+        "--annotator2",
+        default="annotator_2_annotations.xlsx",
+        help="Second annotator file; the 'feedback' column holds annotator 2's labels"
+    )
+
+    parser.add_argument(
+        "--output",
+        default="inter_annotator_agreement.csv"
+    )
+
+    args = parser.parse_args()
+
+    a1 = load(args.annotator1).set_index("_id")
+    a2 = load(args.annotator2).set_index("_id")
+
+    shared = sorted(set(a1.index) & set(a2.index))
+
+    if not shared:
+        raise ValueError("No shared article IDs between the two annotator files")
+
+    d1 = {i: parse_annotation(a1.loc[i, "feedback"]) for i in shared}
+    d2 = {i: parse_annotation(a2.loc[i, "feedback"]) for i in shared}
+
+    rows = []
+
+    # Event identification: agreement on Yes vs No, across all shared articles.
+    a = b = c = d = 0
+
+    for i in shared:
+        yes1 = "yes" in {normalise_value(v) for v in d1[i].get("Answer", [])}
+        yes2 = "yes" in {normalise_value(v) for v in d2[i].get("Answer", [])}
+
+        if yes1 and yes2:
+            a += 1
+        elif yes1:
+            b += 1
+        elif yes2:
+            c += 1
+        else:
+            d += 1
+
+    po, k, lo, hi = cohens_kappa(a, b, c, d)
+
+    rows.append({
+        "Entity": "Event identification",
+        "n": len(shared),
+        "Per cent agreement (%)": round(po, 2),
+        "Cohen's kappa": round(k, 2),
+        "95% CI": "%.2f to %.2f" % (lo, hi),
+        "Interpretation": interpret(k),
+    })
+
+    # Entity-level agreement: event-positive articles only.
+    event_ids = [
+        i for i in shared
+        if "yes" in {normalise_value(v) for v in d1[i].get("Answer", [])}
+    ]
+
+    for key, label in REPORTED:
+
+        a = b = c = d = 0
+
+        for i in event_ids:
+
+            v1 = {normalise_value(v) for v in d1[i].get(key, [])}
+            v2 = {normalise_value(v) for v in d2[i].get(key, [])}
+
+            if v1 and v2:
+                if v1 == v2:
+                    a += 1
+                else:
+                    b += 1
+            elif v1:
+                b += 1
+            elif v2:
+                c += 1
+            else:
+                d += 1
+
+        po, k, lo, hi = cohens_kappa(a, b, c, d)
+
+        rows.append({
+            "Entity": label,
+            "n": len(event_ids),
+            "Per cent agreement (%)": round(po, 2),
+            "Cohen's kappa": round(k, 2) if not np.isnan(k) else np.nan,
+            "95% CI": "%.2f to %.2f" % (lo, hi) if not np.isnan(lo) else "undefined",
+            "Interpretation": interpret(k),
+        })
+
+    output = pd.DataFrame(rows)
+    output.to_csv(args.output, index=False)
+
+    print("Shared articles:", len(shared))
+    print("Event-positive articles:", len(event_ids))
+    print()
+    print(output.to_string(index=False))
+    print()
+    print("Saved to:", args.output)
+
+
+if __name__ == "__main__":
+    main()
