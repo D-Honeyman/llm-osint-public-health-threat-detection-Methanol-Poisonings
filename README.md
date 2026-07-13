@@ -1,141 +1,200 @@
 # LLM Evaluation for Detection of Toxic Alcohol and Methanol Poisoning Events
 
-Dataset and evaluation code for benchmarking a large language model for detecting toxic alcohol and methanol poisoning events from open-source intelligence (OSINT) news articles.
+Evaluation code and gold-standard annotated evaluation set for benchmarking a large language
+model (GPT-4o) for detecting toxic alcohol and methanol poisoning events from open-source
+intelligence (OSINT) news articles.
 
-This repository contains the evaluation dataset and evaluation code used to assess the performance of a large language model (LLM) for detecting toxic alcohol and methanol poisoning events from news articles.
+This repository accompanies the manuscript **Toxic Alcohol and Methanol Poisoning Threat
+Detection Using a Large Language Model** (under review).
 
-The repository accompanies the manuscript:
+Running the two scripts below reproduces the performance and inter-annotator agreement tables
+reported in the manuscript.
 
-**Toxic Alcohol and Methanol Poisoning Threat Detection Using a Large Language Model**
-
-The aim of this repository is to enable reproducibility of the evaluation framework and provide a benchmark dataset for future research in event-based public health surveillance of toxic alcohol exposures using large language models.
+---
 
 ## Overview
 
-Toxic alcohol and methanol poisonings remain a persistent global public health threat, causing severe morbidity, permanent blindness, and high mortality. Traditional surveillance for these events relies on individual country programs that are inconsistent in coverage and subject to substantial reporting delays, leaving persistent gaps in global situational awareness.
+Toxic alcohol and methanol poisonings remain a persistent global public health threat, causing
+severe morbidity, permanent blindness and high mortality. Traditional surveillance relies on
+individual country programmes that are inconsistent in coverage and subject to substantial
+reporting delays, leaving persistent gaps in global situational awareness.
 
-Large language models are increasingly used for automated detection of emerging public health threats from open-source intelligence (OSINT) such as news media. However, reproducible evaluation frameworks for assessing their ability to extract structured event information from such sources remain limited, particularly in the toxic alcohol and methanol poisoning domain.
+Large language models are increasingly used for automated detection of emerging public health
+threats from open-source intelligence such as news media. Reproducible evaluation frameworks
+for assessing their ability to extract structured event information from these sources remain
+limited, particularly in the toxic alcohol and methanol domain.
 
 This repository provides:
 
-- A gold-standard annotated dataset of 100 news articles
-- Human annotation outputs (one file)
-- LLM extraction outputs (same file as above)
-- The evaluation pipeline used to compute precision, recall, and F1 scores
+- A gold-standard annotated evaluation set of 100 news articles
+- The independent annotations of a second reviewer, for inter-annotator agreement
+- The evaluation pipeline used to compute precision, recall, F1 and confidence intervals
+- The inter-annotator agreement pipeline
 
-The repository allows independent researchers to reproduce the evaluation results reported in the manuscript.
+This is an evaluation set, not a collection corpus. It contains only the articles annotated by
+human reviewers for the purpose of measuring model performance. The underlying OSINT collection
+is not distributed (see Reproducibility below).
 
-## Dataset
+---
 
-The evaluation dataset contains 100 news articles manually annotated by two domain-trained reviewers, drawn from a six-month OSINT corpus (30 August 2024 – 31 January 2025) collected via the Bing News API using 17 search terms related to methanol poisoning and adulterated or toxic alcohol events.
+## Repository contents
 
-Each row represents a single article.
+| File | Description |
+| --- | --- |
+| `evaluator_methanol.py` | Performance evaluation (entity parsing, matching, precision/recall/F1, Clopper-Pearson CIs) |
+| `iaa_methanol.py` | Inter-annotator agreement (per cent agreement, Cohen's kappa with 95% CIs) |
+| `evaluation_dataset_100_articles.xlsx` | Gold-standard evaluation set (annotator 1) with GPT-4o outputs |
+| `annotator_2_annotations.xlsx` | Independent annotations by the second reviewer |
+| `requirements.txt` | Python dependencies |
+| `LICENSE` | MIT |
 
-Columns include:
+---
+
+## Evaluation set
+
+100 news articles drawn from a six-month OSINT collection (30 August 2024 to 31 January 2025)
+gathered via the Bing News API using 17 search terms related to methanol poisoning and
+adulterated or toxic alcohol events.
+
+Of the 100 annotated articles, **28 were event-positive** (a toxic alcohol or methanol poisoning
+event was identified). Entity-level extraction and entity-level agreement are therefore assessed
+on those 28 articles; event identification is assessed on all 100.
+
+The gold standard used for model evaluation comprises **annotator 1's** labels. A second
+annotator independently labelled the same 100 articles; those annotations are used only to
+quantify inter-annotator agreement.
+
+`evaluation_dataset_100_articles.xlsx`
 
 | Column | Description |
-|--------|-------------|
+| --- | --- |
 | `_id` | Unique article identifier |
 | `url` | Source article URL |
-| `gpt4o` | Structured extraction generated by the LLM (GPT-4o, zero-shot) |
-| `feedback` | Human gold-standard annotation |
+| `gpt4` | Structured extraction generated by GPT-4o (zero-shot) |
+| `feedback` | Gold-standard annotation (annotator 1) |
 
-Annotations follow a structured bullet-list format representing entities extracted from each article.
+`annotator_2_annotations.xlsx`
 
-## Entity Types Evaluated
+| Column | Description |
+| --- | --- |
+| `_id` | Unique article identifier |
+| `url` | Source article URL |
+| `feedback` | Independent annotation (annotator 2) |
 
-The evaluation measures extraction performance for the following entities:
+Annotations follow a structured bullet-list format representing the entities extracted from
+each article.
 
-- Event identification (toxic alcohol detection / methanol poisoning event)
-- FATALITY COUNT
-- CASE NUMBER (hospitalised and non-hospitalised)
-- LOCATION
-  - Country
-  - Subnational region (state/province)
-  - County
-  - City
-- DATE (specific calendar date or day of the week explicitly associated with the event)
-- TEMPORAL EXPRESSIONS
-  - Years
-  - Months
-  - Relative time phrases
-  - Adverbs of time
+---
 
-Two reporting transformations are applied in the evaluation script:
+## Entities evaluated
 
-- `LOCATION` → standardised hierarchy (Country / State / County / City)
-- `Answer` → `Event identification`
+- Event identification (toxic alcohol or methanol poisoning event)
+- Fatality count
+- Case number
+- Location
+- Date
+- Temporal expressions (years, months, dates, days of the week, adverbs of time)
 
-These transformations do not alter the underlying annotations but standardise reporting terminology.
+Two reporting transformations are applied in the evaluation script: `LOCATION` is reported as
+`COUNTRY`, and `Answer` is reported as `Event identification`. These standardise reporting
+terminology and do not alter the underlying annotations.
 
-## Evaluation Method
+---
 
-The evaluation script computes entity-level performance metrics:
+## Evaluation method
 
-- Precision
-- Recall
-- F1 score
-- 95% Clopper–Pearson confidence intervals
-- Inter-annotator agreement (Cohen's κ and per cent agreement)
+`evaluator_methanol.py` computes entity-level precision, recall and F1 with 95 per cent
+Clopper-Pearson confidence intervals.
 
-The script performs:
+The pipeline performs:
 
-- Parsing of structured entity annotations
-- Label normalisation
-- Entity matching using:
-  - exact matching
-  - semantic similarity using sentence embeddings
-- Calculation of evaluation metrics at the document level (consistent with surveillance-oriented NER benchmarks)
+1. Parsing of structured entity annotations
+2. Label normalisation
+3. Entity matching, combining exact string matching with semantic similarity from sentence
+   embeddings, resolved via optimal (Hungarian) assignment
+4. Calculation of evaluation metrics
 
-Embedding-based matching uses: `sentence-transformers/all-MiniLM-L6-v2`
+An annotation of "not mentioned" denotes entity absence, not an extracted value. Where the
+annotator recorded entities and the model returned "not mentioned", the model's output is
+counted as a **false negative**. A true negative is recorded only where neither the model nor
+the annotator recorded the entity.
 
-The LLM evaluated is **GPT-4o**, run in zero-shot mode with deterministic inference (`temperature = 0.0`, `top_p = 0.1`) and a 3,000-token response cap. No fine-tuning or few-shot exemplars were used.
+Embedding-based matching uses `sentence-transformers/all-MiniLM-L6-v2`.
+
+The model evaluated is **GPT-4o**, run zero-shot with deterministic inference
+(`temperature = 0.0`, `top_p = 0.1`) and a 3,000-token response cap. No fine-tuning or few-shot
+exemplars were used.
+
+---
+
+## Inter-annotator agreement
+
+`iaa_methanol.py` computes per cent agreement and Cohen's kappa with 95 per cent confidence
+intervals between the two annotators.
+
+An entity is treated as concordant only where both annotators recorded the same entity type for
+the same article **with equivalent normalised values** (for example, "three deaths" and
+"3 fatalities"). Where both annotators recorded an entity but the values differ, the annotation
+is treated as discordant.
+
+Because kappa is unstable at high or low prevalence, per cent agreement is reported alongside
+kappa and the two should be interpreted jointly.
+
+---
 
 ## Installation
 
-Clone the repository:
-
 ```bash
-git clone https://github.com/YOUR_USERNAME/llm-methanol-event-detection-evaluation.git
-cd llm-methanol-event-detection-evaluation
-```
-
-Install dependencies:
-
-```bash
+git clone https://github.com/D-Honeyman/llm-osint-public-health-threat-detection-methanol.git
+cd llm-osint-public-health-threat-detection-methanol
 pip install -r requirements.txt
 ```
 
-## Running the Evaluation
+Python 3.9 or later is recommended.
 
-Run the evaluation script:
+---
+
+## Running the evaluation
+
+Performance metrics:
 
 ```bash
-python scripts/ner_evaluation.py \
-  --input data/evaluation_dataset_100_articles.xlsx \
-  --output results/evaluation_results.csv
+python evaluator_methanol.py
 ```
 
-The script will generate `evaluation_results.csv` containing the entity-level evaluation metrics.
+Writes `evaluation_results.csv`.
+
+Inter-annotator agreement:
+
+```bash
+python iaa_methanol.py
+```
+
+Writes `inter_annotator_agreement.csv`.
+
+Both scripts accept `--input` / `--output` (and `--annotator1` / `--annotator2` for the
+agreement script) if you wish to specify paths explicitly.
+
+---
 
 ## Reproducibility
 
-The proprietary components used to collect and process the original news data (including Bing News API ingestion pipelines and large-scale scraping infrastructure) are not included in this repository due to institutional and contractual restrictions.
+The proprietary components used to collect and process the original news data, including the
+Bing News API ingestion pipeline and large-scale scraping infrastructure, are not included here
+due to institutional and contractual restrictions. The full OSINT collection is not distributed.
 
-However, the following reproducible components are provided:
+The components required to reproduce the reported results are provided: the GPT-4o inference
+outputs, both sets of human annotations, and the evaluation code.
 
-- the LLM inference outputs
-- the human gold-standard annotations
-- the evaluation code
-
-These resources allow independent researchers to reproduce the evaluation results.
-
-## License
-
-This repository is released under the MIT License.
+---
 
 ## Citation
 
-If you use this dataset or evaluation framework, please cite:
+Honeyman DA, Heslop DJ, MacIntyre CR. Toxic Alcohol and Methanol Poisoning Threat Detection
+Using a Large Language Model. Under review.
 
-*(To be added once published)*
+---
+
+## License
+
+Released under the MIT License.
