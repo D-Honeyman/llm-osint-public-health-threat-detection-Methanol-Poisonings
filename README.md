@@ -1,14 +1,13 @@
 # LLM Evaluation for Detection of Toxic Alcohol and Methanol Poisoning Events
 
-Evaluation code and gold-standard annotated evaluation set for benchmarking a large language
+Evaluation code and adjudicated gold-standard evaluation set for benchmarking a large language
 model (GPT-4o) for detecting toxic alcohol and methanol poisoning events from open-source
 intelligence (OSINT) news articles.
 
 This repository accompanies the manuscript **Toxic Alcohol and Methanol Poisoning Threat
 Detection Using a Large Language Model** (under review).
 
-Running the two scripts below reproduces the performance and inter-annotator agreement tables
-reported in the manuscript.
+Running the three scripts below reproduces Table 1, Table 2 and Figures 3 to 7 of the manuscript.
 
 ---
 
@@ -17,23 +16,18 @@ reported in the manuscript.
 Toxic alcohol and methanol poisonings remain a persistent global public health threat, causing
 severe morbidity, permanent blindness and high mortality. Traditional surveillance relies on
 individual country programmes that are inconsistent in coverage and subject to substantial
-reporting delays, leaving persistent gaps in global situational awareness.
-
-Large language models are increasingly used for automated detection of emerging public health
-threats from open-source intelligence such as news media. Reproducible evaluation frameworks
-for assessing their ability to extract structured event information from these sources remain
-limited, particularly in the toxic alcohol and methanol domain.
+reporting delays.
 
 This repository provides:
 
-- A gold-standard annotated evaluation set of 100 news articles
-- The independent annotations of a second reviewer, for inter-annotator agreement
-- The evaluation pipeline used to compute precision, recall, F1 and confidence intervals
-- The inter-annotator agreement pipeline
+- An adjudicated gold-standard evaluation set of 100 news articles
+- The independent annotations of both human reviewers, for inter-annotator agreement
+- The evaluation pipeline (precision, recall, F1, Clopper-Pearson confidence intervals)
+- The inter-annotator agreement pipeline (per cent agreement, Cohen's kappa)
+- The figure generation script
 
-This is an evaluation set, not a collection corpus. It contains only the articles annotated by
-human reviewers for the purpose of measuring model performance. The underlying OSINT collection
-is not distributed (see Reproducibility below).
+This is an evaluation set, not a collection corpus. The underlying OSINT collection is not
+distributed (see Reproducibility).
 
 ---
 
@@ -41,10 +35,12 @@ is not distributed (see Reproducibility below).
 
 | File | Description |
 | --- | --- |
-| `evaluator_methanol.py` | Performance evaluation (entity parsing, matching, precision/recall/F1, Clopper-Pearson CIs) |
-| `iaa_methanol.py` | Inter-annotator agreement (per cent agreement, Cohen's kappa with 95% CIs) |
-| `evaluation_dataset_100_articles.xlsx` | Gold-standard evaluation set (annotator 1) with GPT-4o outputs |
+| `evaluator_methanol.py` | Performance evaluation: entity parsing, matching, precision/recall/F1, Clopper-Pearson CIs |
+| `iaa_methanol.py` | Inter-annotator agreement: per cent agreement, Cohen's kappa with 95% CIs |
+| `make_figures.py` | Generates Figures 3 to 7 from the outputs of the two scripts above |
+| `evaluation_dataset_100_articles.xlsx` | Adjudicated gold standard with GPT-4o outputs |
 | `annotator_2_annotations.xlsx` | Independent annotations by the second reviewer |
+| `adjudication_worksheet.xlsx` | The 26 discordant annotations and their consensus resolutions |
 | `requirements.txt` | Python dependencies |
 | `LICENSE` | MIT |
 
@@ -54,15 +50,18 @@ is not distributed (see Reproducibility below).
 
 100 news articles drawn from a six-month OSINT collection (30 August 2024 to 31 January 2025)
 gathered via the Bing News API using 17 search terms related to methanol poisoning and
-adulterated or toxic alcohol events.
+adulterated or toxic alcohol events. The eligible corpus was randomised prior to annotation and
+articles were annotated sequentially from the randomised list.
 
-Of the 100 annotated articles, **28 were event-positive** (a toxic alcohol or methanol poisoning
-event was identified). Entity-level extraction and entity-level agreement are therefore assessed
-on those 28 articles; event identification is assessed on all 100.
+Of the 100 annotated articles, **28 were event-positive**. Entity extraction was not performed
+for articles containing no event, so entity-level metrics derive from those 28 articles, while
+event identification is assessed across all 100.
 
-The gold standard used for model evaluation comprises **annotator 1's** labels. A second
-annotator independently labelled the same 100 articles; those annotations are used only to
-quantify inter-annotator agreement.
+Both annotators independently labelled all 100 articles. Inter-annotator agreement was assessed
+prior to adjudication. All 26 discordant annotations, across 18 articles, were then resolved by
+consensus between the two annotators to produce the adjudicated gold standard used for model
+evaluation. The disagreements and their resolutions are provided in
+`adjudication_worksheet.xlsx`.
 
 `evaluation_dataset_100_articles.xlsx`
 
@@ -71,18 +70,7 @@ quantify inter-annotator agreement.
 | `_id` | Unique article identifier |
 | `url` | Source article URL |
 | `gpt4` | Structured extraction generated by GPT-4o (zero-shot) |
-| `feedback` | Gold-standard annotation (annotator 1) |
-
-`annotator_2_annotations.xlsx`
-
-| Column | Description |
-| --- | --- |
-| `_id` | Unique article identifier |
-| `url` | Source article URL |
-| `feedback` | Independent annotation (annotator 2) |
-
-Annotations follow a structured bullet-list format representing the entities extracted from
-each article.
+| `feedback` | Adjudicated gold-standard annotation |
 
 ---
 
@@ -92,7 +80,7 @@ each article.
 - Fatality count
 - Case number
 - Location
-- Date
+- Date (calendar date explicitly associated with the event)
 - Temporal expressions (years, months, dates, days of the week, adverbs of time)
 
 Two reporting transformations are applied in the evaluation script: `LOCATION` is reported as
@@ -106,20 +94,14 @@ terminology and do not alter the underlying annotations.
 `evaluator_methanol.py` computes entity-level precision, recall and F1 with 95 per cent
 Clopper-Pearson confidence intervals.
 
-The pipeline performs:
-
-1. Parsing of structured entity annotations
-2. Label normalisation
-3. Entity matching, combining exact string matching with semantic similarity from sentence
-   embeddings, resolved via optimal (Hungarian) assignment
-4. Calculation of evaluation metrics
-
 An annotation of "not mentioned" denotes entity absence, not an extracted value. Where the
-annotator recorded entities and the model returned "not mentioned", the model's output is
-counted as a **false negative**. A true negative is recorded only where neither the model nor
-the annotator recorded the entity.
+annotator recorded entities and the model returned "not mentioned", the model output is counted
+as a **false negative**. A true negative is recorded only where neither the model nor the
+annotator recorded the entity. Specificity is not reported, as no meaningful true-negative class
+exists for event identification on a pre-filtered corpus.
 
-Embedding-based matching uses `sentence-transformers/all-MiniLM-L6-v2`.
+Entity matching combines exact string matching with semantic similarity from sentence embeddings
+(`sentence-transformers/all-MiniLM-L6-v2`), resolved via optimal (Hungarian) assignment.
 
 The model evaluated is **GPT-4o**, run zero-shot with deterministic inference
 (`temperature = 0.0`, `top_p = 0.1`) and a 3,000-token response cap. No fine-tuning or few-shot
@@ -130,12 +112,12 @@ exemplars were used.
 ## Inter-annotator agreement
 
 `iaa_methanol.py` computes per cent agreement and Cohen's kappa with 95 per cent confidence
-intervals between the two annotators.
+intervals, **prior to adjudication**.
 
 An entity is treated as concordant only where both annotators recorded the same entity type for
-the same article **with equivalent normalised values** (for example, "three deaths" and
-"3 fatalities"). Where both annotators recorded an entity but the values differ, the annotation
-is treated as discordant.
+the same article with equivalent normalised values (for example, "three deaths" and
+"3 fatalities"). Where both recorded an entity but the values differ, the annotation is treated
+as discordant.
 
 Because kappa is unstable at high or low prevalence, per cent agreement is reported alongside
 kappa and the two should be interpreted jointly.
@@ -154,26 +136,16 @@ Python 3.9 or later is recommended.
 
 ---
 
-## Running the evaluation
-
-Performance metrics:
+## Reproducing the results
 
 ```bash
-python evaluator_methanol.py
+python evaluator_methanol.py     # -> evaluation_results.csv          (Table 1)
+python iaa_methanol.py           # -> inter_annotator_agreement.csv   (Table 2)
+python make_figures.py           # -> figures/                        (Figures 3 to 7)
 ```
 
-Writes `evaluation_results.csv`.
-
-Inter-annotator agreement:
-
-```bash
-python iaa_methanol.py
-```
-
-Writes `inter_annotator_agreement.csv`.
-
-Both scripts accept `--input` / `--output` (and `--annotator1` / `--annotator2` for the
-agreement script) if you wish to specify paths explicitly.
+All three scripts run with no arguments. Each accepts `--input` / `--output` if you wish to
+specify paths explicitly.
 
 ---
 
@@ -181,10 +153,12 @@ agreement script) if you wish to specify paths explicitly.
 
 The proprietary components used to collect and process the original news data, including the
 Bing News API ingestion pipeline and large-scale scraping infrastructure, are not included here
-due to institutional and contractual restrictions. The full OSINT collection is not distributed.
+due to institutional and contractual restrictions. End-to-end reproduction of the article
+collection is therefore not possible.
 
-The components required to reproduce the reported results are provided: the GPT-4o inference
-outputs, both sets of human annotations, and the evaluation code.
+The components required to reproduce every reported result are provided: the GPT-4o inference
+outputs, both annotators' independent labels, the adjudication record, the adjudicated gold
+standard, and the evaluation, agreement and figure code.
 
 ---
 
