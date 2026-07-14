@@ -1,6 +1,9 @@
 """
 Evaluation pipeline for zero-shot LLM extraction of toxic alcohol and methanol poisoning events.
-This script reproduces the entity-level precision, recall, and F1 scores reported in the manuscript using a gold-standard dataset of news articles annotated by human reviewers.
+
+This script reproduces the entity-level precision, recall, and F1 scores reported
+in the manuscript using a gold-standard dataset of news articles annotated by human reviewers.
+
 Author: Damian Honeyman et al.
 """
 import argparse
